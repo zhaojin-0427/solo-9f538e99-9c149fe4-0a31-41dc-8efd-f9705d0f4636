@@ -16,81 +16,15 @@ knowing the block populations themselves.
 from fractions import Fraction
 from typing import Any, Dict, List, Tuple
 
+from .builder_core import build_package  # noqa: F401  (re-exported entry point)
 from .expressions import format_expression, format_fraction, parse_fraction
-from .rationals import Vec, nullspace, primitive_integer, solve
+from .rationals import Vec, solve
+
+__all__ = ["build_package", "convert", "ConversionError"]
 
 
 class ConversionError(ValueError):
     """Raised when a whole conversion request must be rejected."""
-
-
-# --------------------------------------------------------------------------
-# Package builder
-# --------------------------------------------------------------------------
-def build_package(
-    old_districts: List[Dict[str, Any]],
-    new_districts: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Build a block-free JSON handoff package.
-
-    Each district is ``{"code": str, "blocks": [block_id, ...]}``.
-    A block may be covered by any number of districts.
-    """
-    old_codes = [d["code"] for d in old_districts]
-    new_codes = [d["code"] for d in new_districts]
-    n_old = len(old_codes)
-
-    blocks = sorted(
-        {b for d in old_districts + new_districts for b in d["blocks"]}
-    )
-
-    def incidence(districts: List[Dict[str, Any]]):
-        return [
-            [
-                Fraction(1 if block in district["blocks"] else 0)
-                for district in districts
-            ]
-            for block in blocks
-        ]
-
-    a = incidence(old_districts)  # blocks x old
-    b = incidence(new_districts)  # blocks x new
-
-    # ker(A): every vector k with A k = 0 is an exact equation
-    # sum_j k_j * p_j = 0 between old-district populations.
-    kernel = nullspace(a, n_old)
-    old_relations: List[Dict[str, int]] = []
-    for k in kernel:
-        ints = primitive_integer(k)
-        relation = {code: val for code, val in zip(old_codes, ints) if val != 0}
-        old_relations.append(relation)
-
-    # A c_j = b_j  =>  q_j = c_j . p  whenever the system is consistent.
-    new_relations = []
-    for j, code in enumerate(new_codes):
-        col = [row[j] for row in b]
-        particular = solve(a, col, n_old)
-        if particular is None:
-            new_relations.append(
-                {"code": code, "derivable": False, "coefficients": {}}
-            )
-        else:
-            coefficients = {
-                old_codes[i]: format_fraction(particular[i])
-                for i in range(n_old)
-                if particular[i] != 0
-            }
-            new_relations.append(
-                {"code": code, "derivable": True, "coefficients": coefficients}
-            )
-
-    return {
-        "schema_version": 1,
-        "old_districts": old_codes,
-        "new_districts": new_codes,
-        "old_relations": old_relations,
-        "new_district_relations": new_relations,
-    }
 
 
 # --------------------------------------------------------------------------
@@ -145,7 +79,6 @@ def convert(package: Dict[str, Any], old_populations: Dict[str, int]) -> Dict[st
     :class:`ConversionError` and nothing else is returned.
     """
     old_codes: List[str] = package["old_districts"]
-    new_codes: List[str] = package["new_districts"]
     n_old = len(old_codes)
     available = [code for code in old_codes if code in old_populations]
     available_idx = {old_codes.index(c) for c in available}

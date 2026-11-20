@@ -4,6 +4,45 @@
 FastAPI 实例完成这件事，全程使用有理数精确运算（`fractions.Fraction`），
 不使用浮点数。
 
+## 大规模清单与 192 MiB 内存限制
+
+需求规模可达 60 万个街块、新旧区各 240 个、每区至多 5000 个街块，而进程
+地址空间限制为 192 MiB。朴素实现会把整份 JSON 读成 Python 对象树，并构造
+60 万行的稠密 `Fraction` 矩阵，收件或构包阶段就会耗尽内存。本服务从两端
+压缩内存：
+
+- **收件（流式解析）**：`/build` 不再让 FastAPI/Pydantic 一次性加载请求体，
+  而是用 `app/streaming.py` 中手写的增量 JSON 解析器逐字符读取。结构标点
+  （`{ } [ ] , :`）逐字符处理，字符串按 JSON 转义规则手工扫描，任意 token
+  被网络分包截断都能在下一个 chunk 续上；每个街块编号读完即入账，不保留
+  任何按区排列的街块清单。
+- **存储（位掩码）**：每个街块只在一个 `dict` 里对应一个 Python 整数位掩码，
+  低 240 位记录旧区归属、高位记录新区归属。
+- **构包（按旧区签名聚合 + 稀疏消元）**：旧区归属完全相同的街块对所有线性
+  代数计算等价，按“旧区签名”聚合成组（最多约 2.9 万组），用稀疏字典做前向
+  消元，最后只对一个至多 240×480 的小矩阵做一次稠密 RREF。
+
+实测在硬 192 MiB `RLIMIT_AS` 下处理完整 60 万街块清单，峰值 RSS 约 124 MiB，
+基准脚本见 `bench/bench_mem.py`。
+
+### 整次失败与“读到请求末尾”
+
+解析器始终消费整个请求体；语义错误与 JSON 语法错误先记录、在到达流末尾后
+才统一抛出，因此**末段**出现的同一区内重复街块编号、JSON 损坏或截断都会让
+整次请求失败并返回错误原因：
+
+- JSON 语法/UTF-8/截断/尾随垃圾 → HTTP 400，`error="invalid_json"`；
+- 语义约束（重复编号、重复区号、区列表为空、超过 240 个区等）→ HTTP 422，
+  `error="invalid_request"`。
+
+### 孪生街块规则
+
+若两个街块的**旧区归属完全相同**，但其中只有一个归入某个新区，则该新区的
+覆盖关系无法用旧区人数精确表达（同一个旧区观测无法区分这两个街块），该新区
+在交接包中标记为 `"derivable": false`，换算时进入 `missing`，原因是
+`not_expressible_from_old_districts`。若新区对这对街块一视同仁（同时包含或
+同时不包含），则不受影响，仍按精确分数系数推导。
+
 ## 数学模型
 
 设街块人数为未知量 x，0/1 关联矩阵：
@@ -84,6 +123,12 @@ docker compose up --build
 - 交接包服务（含 Swagger 交互文档）：<http://localhost:8001/docs>
 - 换算服务（含 Swagger 交互文档）：<http://localhost:8002/docs>
 - 健康检查：`GET /health`
+- 两个容器都配置了 `mem_limit: 192m`（含 swap 上限），与进程地址空间约束一致。
+
+在 `http://localhost:8001/docs` 的 `POST /build` 中仍按原 JSON 形态提交
+（`old_districts` / `new_districts`，结构未变），Swagger 提供请求体编辑器；
+服务端在内部改为流式解析。生成的 v1 交接包以及任何既有 v1 包，都可直接在
+`http://localhost:8002/docs` 的 `POST /convert` 中使用。
 
 ## 本地运行与测试
 
@@ -110,10 +155,13 @@ app/
   rationals.py      # 精确有理线性代数（RREF、零空间、线性方程组）
   expressions.py    # 分数与算式格式化
   models.py         # Pydantic 请求/响应模型与校验
-  engine.py         # 交接包生成与换算的纯领域逻辑
-  builder_app.py    # 实例 1：/build
+  builder_core.py   # 位掩码累加、签名聚合、稀疏消元与构包（内存受限核心）
+  streaming.py      # 手写增量 JSON 解析器（逐字符、可跨 chunk、读到 EOF）
+  engine.py         # 换算纯领域逻辑（构包入口委托给 builder_core）
+  builder_app.py    # 实例 1：流式 /build
   converter_app.py  # 实例 2：/convert
-tests/              # 14 个端到端测试（TestClient）
+tests/              # 端到端与流式/内存/孪生规则测试（pytest）
+bench/              # 192 MiB 全规模内存基准与交叉校验脚本（非交付包内容）
 Dockerfile
-docker-compose.yml
+docker-compose.yml  # 两个服务，均带 192 MiB 内存硬限制
 ```

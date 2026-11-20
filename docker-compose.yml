@@ -5,6 +5,10 @@ services:
     command: uvicorn app.builder_app:app --host 0.0.0.0 --port 8000
     ports:
       - "8001:8000"
+    # The streaming builder is engineered to process a 600k-block manifest
+    # inside a 192 MiB process address space; make that a hard container limit.
+    mem_limit: 192m
+    memswap_limit: 192m
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 15s
@@ -18,6 +22,8 @@ services:
     command: uvicorn app.converter_app:app --host 0.0.0.0 --port 8000
     ports:
       - "8002:8000"
+    mem_limit: 192m
+    memswap_limit: 192m
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 15s

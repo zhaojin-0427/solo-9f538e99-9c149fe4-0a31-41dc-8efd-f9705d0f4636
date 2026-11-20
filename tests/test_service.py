@@ -1,5 +1,4 @@
 """End-to-end tests through both FastAPI apps (uses FastAPI TestClient)."""
-import pytest
 from fastapi.testclient import TestClient
 
 from app.builder_app import app as builder_app
